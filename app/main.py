@@ -1,7 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.core.config import get_settings
+from typing import Any
+from fastapi import Depends
+
+from app.core.security import get_current_user
+from app.api.v1.posts import router as posts_router
+
 
 settings = get_settings()
 
@@ -20,6 +25,9 @@ app.add_middleware(
 )
 
 
+app.include_router(posts_router)
+
+
 @app.get("/")
 async def root():
     return {
@@ -31,3 +39,12 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/api/v1/me")
+async def get_me(
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "id": user["id"],
+        "email": user.get("email"),
+    }
