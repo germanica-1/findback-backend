@@ -34,3 +34,13 @@ class PostResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class PostUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=3, max_length=150)
+    description: str | None = Field(default=None, min_length=1, max_length=5000)
+    location: str | None = Field(default=None, min_length=1, max_length=255)
+    item_date: date | None = None
+    category_id: int | None = Field(default=None, ge=1)
+    post_type: Literal["missing", "found"] | None = None
+

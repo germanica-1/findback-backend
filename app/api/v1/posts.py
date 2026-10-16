@@ -8,6 +8,15 @@ from app.core.config import Settings, get_settings
 from app.core.security import get_current_user
 from app.core.supabase import supabase_request
 from app.schemas.posts import CategoryResponse, PostCreate, PostResponse
+from uuid import UUID
+
+from app.schemas.posts import (
+    CategoryResponse,
+    PostCreate,
+    PostResponse,
+    PostUpdate,
+)
+
 
 router = APIRouter(prefix="/api/v1", tags=["Posts"])
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -107,6 +116,53 @@ async def create_post(
         raise HTTPException(
             status_code=502,
             detail="The post was not returned after creation.",
+        )
+
+    return result[0]
+
+
+
+@router.patch("/posts/{post_id}", response_model=PostResponse)
+async def update_post(
+    post_id: UUID,
+    post: PostUpdate,
+    token: str = Depends(require_token),
+    settings: Settings = Depends(get_settings),
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    del user  # Supabase RLS enforces post ownership.
+
+    payload = post.model_dump(mode="json", exclude_unset=True)
+
+    if not payload:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide at least one field to update.",
+        )
+
+    if any(value is None for value in payload.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="Updated fields cannot be null.",
+        )
+
+    result = await supabase_request(
+        settings,
+        token,
+        "PATCH",
+        "posts",
+        params={
+            "id": f"eq.{post_id}",
+            "select": POST_FIELDS,
+        },
+        payload=payload,
+        extra_headers={"Prefer": "return=representation"},
+    )
+
+    if not isinstance(result, list) or not result:
+        raise HTTPException(
+            status_code=404,
+            detail="Post not found or you do not have permission to edit it.",
         )
 
     return result[0]
