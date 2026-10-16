@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
@@ -172,4 +172,36 @@ async def update_comment(
         )
 
     return updated_comments[0]
+
+
+
+@router.delete(
+    "/comments/{comment_id}",
+    status_code=204,
+)
+async def delete_comment(
+    comment_id: UUID,
+    token: str = Depends(require_token),
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    deleted_comments = await supabase_request(
+        settings,
+        token,
+        "DELETE",
+        "comments",
+        params={
+            "id": f"eq.{comment_id}",
+            "select": "id",
+        },
+        extra_headers={"Prefer": "return=representation"},
+    )
+
+    if not deleted_comments:
+        raise HTTPException(
+            status_code=404,
+            detail="Comment not found or you are not allowed to delete it.",
+        )
+
+    return Response(status_code=204)
 
