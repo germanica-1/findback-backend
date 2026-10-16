@@ -1,7 +1,6 @@
-
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
@@ -166,4 +165,31 @@ async def update_post(
         )
 
     return result[0]
+
+
+@router.delete("/posts/{post_id}", status_code=204)
+async def delete_post(
+    post_id: UUID,
+    token: str = Depends(require_token),
+    settings: Settings = Depends(get_settings),
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    del user  # Supabase RLS enforces owner/admin permissions.
+
+    result = await supabase_request(
+        settings,
+        token,
+        "DELETE",
+        "posts",
+        params={"id": f"eq.{post_id}"},
+        extra_headers={"Prefer": "return=representation"},
+    )
+
+    if not isinstance(result, list) or not result:
+        raise HTTPException(
+            status_code=404,
+            detail="Post not found or you do not have permission to delete it.",
+        )
+
+    return Response(status_code=204)
 
