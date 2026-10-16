@@ -6,7 +6,7 @@ from fastapi import Depends
 
 from app.core.security import get_current_user
 from app.api.v1.posts import router as posts_router
-
+from app.api.v1.comments import router as comments_router
 
 settings = get_settings()
 
@@ -26,7 +26,7 @@ app.add_middleware(
 
 
 app.include_router(posts_router)
-
+app.include_router(comments_router)
 
 @app.get("/")
 async def root():
