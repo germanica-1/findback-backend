@@ -44,3 +44,7 @@ class PostUpdate(BaseModel):
     category_id: int | None = Field(default=None, ge=1)
     post_type: Literal["missing", "found"] | None = None
 
+
+class PostStatusUpdate(BaseModel):
+    status: Literal["open", "resolved"]
+

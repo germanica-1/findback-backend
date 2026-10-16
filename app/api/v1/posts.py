@@ -14,6 +14,7 @@ from app.schemas.posts import (
     PostCreate,
     PostResponse,
     PostUpdate,
+    PostStatusUpdate,
 )
 
 
@@ -192,4 +193,37 @@ async def delete_post(
         )
 
     return Response(status_code=204)
+
+
+
+@router.patch("/posts/{post_id}/status", response_model=PostResponse)
+async def update_post_status(
+    post_id: UUID,
+    body: PostStatusUpdate,
+    token: str = Depends(require_token),
+    settings: Settings = Depends(get_settings),
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    del user  # Supabase RLS enforces owner/admin permissions.
+
+    result = await supabase_request(
+        settings,
+        token,
+        "PATCH",
+        "posts",
+        params={
+            "id": f"eq.{post_id}",
+            "select": POST_FIELDS,
+        },
+        payload={"status": body.status},
+        extra_headers={"Prefer": "return=representation"},
+    )
+
+    if not isinstance(result, list) or not result:
+        raise HTTPException(
+            status_code=404,
+            detail="Post not found or you do not have permission to update it.",
+        )
+
+    return result[0]
 
