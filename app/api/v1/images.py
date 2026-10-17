@@ -16,7 +16,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import get_settings
 from app.core.security import get_current_user
 from app.core.supabase import supabase_request
-from app.schemas.post_images import PostImageResponse
+from app.schemas.post_images import PostImageResponse, PostImageWithUrlResponse
+
 
 router = APIRouter(prefix="/api/v1", tags=["Post Images"])
 
@@ -185,4 +186,114 @@ async def upload_post_image(
         )
 
     return image_record
+
+
+@router.get(
+    "/posts/{post_id}/images",
+    response_model=list[PostImageWithUrlResponse],
+)
+async def get_post_images(
+    post_id: UUID,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    user: dict = Depends(get_current_user),
+):
+    settings = get_settings()
+    access_token = credentials.credentials
+
+    # Verify that the post exists.
+    posts = await supabase_request(
+        settings,
+        access_token,
+        "GET",
+        "posts",
+        params={
+            "select": "id",
+            "id": f"eq.{post_id}",
+            "limit": "1",
+        },
+    )
+
+    if not posts:
+        raise HTTPException(status_code=404, detail="Post not found.")
+
+    # Retrieve the registered image metadata.
+    images = await supabase_request(
+        settings,
+        access_token,
+        "GET",
+        "post_images",
+        params={
+            "select": "id,post_id,storage_path,alt_text,created_at",
+            "post_id": f"eq.{post_id}",
+            "order": "created_at.asc",
+        },
+    )
+
+    results = []
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for image_record in images:
+            encoded_path = "/".join(
+                quote(segment, safe="")
+                for segment in image_record["storage_path"].split("/")
+            )
+
+            signing_url = (
+                f"{settings.supabase_url.rstrip('/')}"
+                f"/storage/v1/object/sign/item-images/{encoded_path}"
+            )
+
+            try:
+                response = await client.post(
+                    signing_url,
+                    headers={
+                        "apikey": settings.supabase_publishable_key,
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"expiresIn": 3600},
+                )
+            except httpx.RequestError:
+                raise HTTPException(
+                    status_code=503,
+                    detail="The image storage service is temporarily unavailable.",
+                )
+
+            if not response.is_success:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Could not generate an image URL.",
+                )
+
+            data = response.json()
+            signed_url = data.get("signedURL") or data.get("signedUrl")
+
+            if not signed_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail="The image storage service returned an invalid response.",
+                )
+
+            if signed_url.startswith("http://") or signed_url.startswith("https://"):
+                pass
+            elif signed_url.startswith("/storage/v1/"):
+                signed_url = (
+                    f"{settings.supabase_url.rstrip('/')}{signed_url}"
+                )
+            elif signed_url.startswith("/"):
+                signed_url = (
+                    f"{settings.supabase_url.rstrip('/')}/storage/v1{signed_url}"
+                )
+            else:
+                signed_url = (
+                    f"{settings.supabase_url.rstrip('/')}"
+                    f"/storage/v1/{signed_url}"
+                )
+
+            results.append({
+                **image_record,
+                "signed_url": signed_url,
+            })
+
+    return results
 

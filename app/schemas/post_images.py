@@ -13,3 +13,7 @@ class PostImageResponse(BaseModel):
     alt_text: str | None = None
     created_at: datetime
 
+
+class PostImageWithUrlResponse(PostImageResponse):
+    signed_url: str
+
