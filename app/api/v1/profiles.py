@@ -1,4 +1,5 @@
 from uuid import UUID
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -8,7 +9,7 @@ from app.core.security import get_current_user
 from app.core.supabase import supabase_request
 
 from app.schemas.profiles import ProfileResponse, ProfileUpdate
-
+from app.schemas.posts import PostResponse
 
 router = APIRouter(prefix="/api/v1", tags=["Profiles"])
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -128,4 +129,61 @@ async def get_public_profile(
         )
 
     return profiles[0]
+
+
+@router.get(
+    "/profiles/{user_id}/posts",
+    response_model=list[PostResponse],
+)
+async def get_user_posts(
+    user_id: UUID,
+    status: Literal["open", "resolved"] | None = None,
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    token: str = Depends(require_token),
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    # Confirm that the profile exists.
+    profiles = await supabase_request(
+        settings,
+        token,
+        "GET",
+        "profiles",
+        params={
+            "select": "id",
+            "id": f"eq.{user_id}",
+            "limit": "1",
+        },
+    )
+
+    if not profiles:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found.",
+        )
+
+    params = {
+        "select": (
+            "id,user_id,category_id,post_type,status,title,"
+            "description,location,item_date,created_at,updated_at"
+        ),
+        "user_id": f"eq.{user_id}",
+        "order": "created_at.desc",
+        "limit": str(limit),
+        "offset": str(offset),
+    }
+
+    if status is not None:
+        params["status"] = f"eq.{status}"
+
+    posts = await supabase_request(
+        settings,
+        token,
+        "GET",
+        "posts",
+        params=params,
+    )
+
+    return posts
 
