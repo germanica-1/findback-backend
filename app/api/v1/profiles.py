@@ -101,3 +101,31 @@ async def update_my_profile(
 
     return updated_profiles[0]
 
+
+@router.get("/profiles/{user_id}", response_model=ProfileResponse)
+async def get_public_profile(
+    user_id: UUID,
+    token: str = Depends(require_token),
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    profiles = await supabase_request(
+        settings,
+        token,
+        "GET",
+        "profiles",
+        params={
+            "select": PROFILE_FIELDS,
+            "id": f"eq.{user_id}",
+            "limit": "1",
+        },
+    )
+
+    if not profiles:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found.",
+        )
+
+    return profiles[0]
+
