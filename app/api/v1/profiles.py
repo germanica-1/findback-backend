@@ -6,7 +6,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import Settings, get_settings
 from app.core.security import get_current_user
 from app.core.supabase import supabase_request
-from app.schemas.profiles import ProfileResponse
+
+from app.schemas.profiles import ProfileResponse, ProfileUpdate
 
 
 router = APIRouter(prefix="/api/v1", tags=["Profiles"])
@@ -53,4 +54,50 @@ async def get_my_profile(
         )
 
     return profiles[0]
+
+
+@router.patch("/profiles/me", response_model=ProfileResponse)
+async def update_my_profile(
+    profile_data: ProfileUpdate,
+    token: str = Depends(require_token),
+    user: dict = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    payload = profile_data.model_dump(exclude_unset=True)
+
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one profile field to update.",
+        )
+
+    # Do not allow empty names, but allow clearing bio and avatar_url.
+    if "full_name" in payload:
+        if payload["full_name"] is None or not payload["full_name"].strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Full name cannot be empty.",
+            )
+        payload["full_name"] = payload["full_name"].strip()
+
+    updated_profiles = await supabase_request(
+        settings,
+        token,
+        "PATCH",
+        "profiles",
+        params={
+            "id": f"eq.{user['id']}",
+            "select": PROFILE_FIELDS,
+        },
+        payload=payload,
+        extra_headers={"Prefer": "return=representation"},
+    )
+
+    if not updated_profiles:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found or could not be updated.",
+        )
+
+    return updated_profiles[0]
 
