@@ -9,7 +9,7 @@ from app.api.v1.posts import router as posts_router
 from app.api.v1.comments import router as comments_router
 from app.api.v1.profiles import router as profiles_router
 from app.api.v1.images import router as images_router
-
+from app.api.v1.admin import router as admin_router
 
 settings = get_settings()
 
@@ -32,6 +32,7 @@ app.include_router(posts_router)
 app.include_router(comments_router)
 app.include_router(profiles_router)
 app.include_router(images_router)
+app.include_router(admin_router)
 
 @app.get("/")
 async def root():
