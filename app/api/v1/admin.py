@@ -123,8 +123,7 @@ async def update_post_status_as_admin(
         )
 
     return updated_post
-
-
+        
 
 @router.get("/logs", response_model=list[AdminLogResponse])
 async def list_admin_logs(
