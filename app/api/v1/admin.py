@@ -9,6 +9,8 @@ from app.core.permissions import require_admin
 from app.core.supabase import supabase_request
 from app.schemas.posts import PostResponse, PostStatusUpdate
 from app.services.audit import record_admin_action
+from app.schemas.admin import AdminLogResponse
+
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin"])
 
@@ -121,4 +123,38 @@ async def update_post_status_as_admin(
         )
 
     return updated_post
+
+
+
+@router.get("/logs", response_model=list[AdminLogResponse])
+async def list_admin_logs(
+    action: str | None = Query(default=None, min_length=1, max_length=100),
+    post_id: UUID | None = None,
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    user: dict = Depends(require_admin),
+):
+    del user
+
+    params = {
+        "select": "id,actor_id,action,post_id,details,created_at",
+        "order": "created_at.desc",
+        "limit": str(limit),
+        "offset": str(offset),
+    }
+
+    if action is not None:
+        params["action"] = f"eq.{action}"
+
+    if post_id is not None:
+        params["post_id"] = f"eq.{post_id}"
+
+    return await supabase_request(
+        get_settings(),
+        credentials.credentials,
+        "GET",
+        "admin_logs",
+        params=params,
+    )
 
