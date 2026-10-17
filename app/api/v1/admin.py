@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.core.permissions import require_admin
 from app.core.supabase import supabase_request
 from app.schemas.posts import PostResponse, PostStatusUpdate
+from app.services.audit import record_admin_action
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin"])
 
@@ -57,11 +58,34 @@ async def update_post_status_as_admin(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     user: dict = Depends(require_admin),
 ):
-    del user  # require_admin verifies the user's database role.
+    settings = get_settings()
+    access_token = credentials.credentials
 
+    # Read the current status before making the change.
+    existing_posts = await supabase_request(
+        settings,
+        access_token,
+        "GET",
+        "posts",
+        params={
+            "select": "id,status",
+            "id": f"eq.{post_id}",
+            "limit": "1",
+        },
+    )
+
+    if not existing_posts:
+        raise HTTPException(
+            status_code=404,
+            detail="Post not found.",
+        )
+
+    previous_status = existing_posts[0]["status"]
+
+    # Update the post using the administrator's own access token.
     updated_posts = await supabase_request(
-        get_settings(),
-        credentials.credentials,
+        settings,
+        access_token,
         "PATCH",
         "posts",
         params={
@@ -78,8 +102,23 @@ async def update_post_status_as_admin(
     if not updated_posts:
         raise HTTPException(
             status_code=404,
-            detail="Post not found.",
+            detail="Post not found or no post was updated.",
         )
 
-    return updated_posts[0]
+    updated_post = updated_posts[0]
+
+    # Record only actual status changes.
+    if previous_status != payload.status:
+        await record_admin_action(
+            settings,
+            actor_id=UUID(user["id"]),
+            action="post_status_updated",
+            post_id=post_id,
+            details={
+                "previous_status": previous_status,
+                "new_status": payload.status,
+            },
+        )
+
+    return updated_post
 
