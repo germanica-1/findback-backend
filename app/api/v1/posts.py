@@ -1,23 +1,23 @@
+
 from typing import Any
-import httpx
 from urllib.parse import quote
+from uuid import UUID
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
 from app.core.security import get_current_user
 from app.core.supabase import supabase_request
-from app.schemas.posts import CategoryResponse, PostCreate, PostResponse
-from uuid import UUID
-
+from app.schemas.feed import FeedPostResponse
 from app.schemas.posts import (
     CategoryResponse,
     PostCreate,
     PostResponse,
-    PostUpdate,
     PostStatusUpdate,
+    PostUpdate,
 )
-from app.schemas.feed import FeedPostResponse
 
 
 router = APIRouter(prefix="/api/v1", tags=["Posts"])
@@ -28,13 +28,121 @@ POST_FIELDS = (
     "location,item_date,created_at,updated_at"
 )
 
+FEED_SELECT = (
+    f"{POST_FIELDS},"
+    "author:profiles!posts_user_id_fkey(id,full_name,avatar_url),"
+    "category:categories(id,name),"
+    "images:post_images(id,storage_path,alt_text,created_at),"
+    "comments(count)"
+)
+
 
 def require_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> str:
     if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Authentication required.")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required.",
+        )
+
     return credentials.credentials
+
+
+async def enrich_post(
+    post: dict[str, Any],
+    token: str,
+    settings: Settings,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Add signed image URLs and the comment count to a post."""
+
+    feed_images = []
+
+    for image_record in post.pop("images", []):
+        storage_path = image_record["storage_path"]
+
+        encoded_path = "/".join(
+            quote(segment, safe="")
+            for segment in storage_path.split("/")
+        )
+
+        signing_url = (
+            f"{settings.supabase_url.rstrip('/')}"
+            f"/storage/v1/object/sign/item-images/{encoded_path}"
+        )
+
+        try:
+            response = await client.post(
+                signing_url,
+                headers={
+                    "apikey": settings.supabase_publishable_key,
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={"expiresIn": 3600},
+            )
+        except httpx.RequestError:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The image storage service is temporarily unavailable."
+                ),
+            )
+
+        if not response.is_success:
+            raise HTTPException(
+                status_code=502,
+                detail="Could not generate an image URL for the post.",
+            )
+
+        data = response.json()
+        signed_url = data.get("signedURL") or data.get("signedUrl")
+
+        if not signed_url:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "The image storage service returned an invalid response."
+                ),
+            )
+
+        if signed_url.startswith("/storage/v1/"):
+            signed_url = (
+                f"{settings.supabase_url.rstrip('/')}{signed_url}"
+            )
+        elif signed_url.startswith("/"):
+            signed_url = (
+                f"{settings.supabase_url.rstrip('/')}"
+                f"/storage/v1{signed_url}"
+            )
+        elif not signed_url.startswith(("http://", "https://")):
+            signed_url = (
+                f"{settings.supabase_url.rstrip('/')}"
+                f"/storage/v1/{signed_url}"
+            )
+
+        feed_images.append(
+            {
+                "id": image_record["id"],
+                "alt_text": image_record.get("alt_text"),
+                "created_at": image_record["created_at"],
+                "signed_url": signed_url,
+            }
+        )
+
+    comment_rows = post.pop("comments", [])
+    comment_count = (
+        comment_rows[0].get("count", 0)
+        if comment_rows
+        else 0
+    )
+
+    return {
+        **post,
+        "images": feed_images,
+        "comment_count": comment_count,
+    }
 
 
 @router.get("/categories", response_model=list[CategoryResponse])
@@ -50,15 +158,25 @@ async def list_categories(
         token,
         "GET",
         "categories",
-        params={"select": "id,name", "order": "id.asc"},
+        params={
+            "select": "id,name",
+            "order": "id.asc",
+        },
     )
+
     return result
 
 
 @router.get("/posts", response_model=list[PostResponse])
 async def list_posts(
-    post_type: str | None = Query(default=None, pattern="^(missing|found)$"),
-    status: str | None = Query(default=None, pattern="^(open|resolved)$"),
+    post_type: str | None = Query(
+        default=None,
+        pattern="^(missing|found)$",
+    ),
+    status: str | None = Query(
+        default=None,
+        pattern="^(open|resolved)$",
+    ),
     category_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
@@ -91,6 +209,7 @@ async def list_posts(
         "posts",
         params=params,
     )
+
     return result
 
 
@@ -123,7 +242,6 @@ async def create_post(
     return result[0]
 
 
-
 @router.patch("/posts/{post_id}", response_model=PostResponse)
 async def update_post(
     post_id: UUID,
@@ -134,7 +252,10 @@ async def update_post(
 ):
     del user  # Supabase RLS enforces post ownership.
 
-    payload = post.model_dump(mode="json", exclude_unset=True)
+    payload = post.model_dump(
+        mode="json",
+        exclude_unset=True,
+    )
 
     if not payload:
         raise HTTPException(
@@ -164,7 +285,9 @@ async def update_post(
     if not isinstance(result, list) or not result:
         raise HTTPException(
             status_code=404,
-            detail="Post not found or you do not have permission to edit it.",
+            detail=(
+                "Post not found or you do not have permission to edit it."
+            ),
         )
 
     return result[0]
@@ -191,11 +314,12 @@ async def delete_post(
     if not isinstance(result, list) or not result:
         raise HTTPException(
             status_code=404,
-            detail="Post not found or you do not have permission to delete it.",
+            detail=(
+                "Post not found or you do not have permission to delete it."
+            ),
         )
 
     return Response(status_code=204)
-
 
 
 @router.patch("/posts/{post_id}/status", response_model=PostResponse)
@@ -224,16 +348,25 @@ async def update_post_status(
     if not isinstance(result, list) or not result:
         raise HTTPException(
             status_code=404,
-            detail="Post not found or you do not have permission to update it.",
+            detail=(
+                "Post not found or you do not have permission to update it."
+            ),
         )
 
     return result[0]
 
 
+# Keep this static route before /posts/{post_id}.
 @router.get("/posts/feed", response_model=list[FeedPostResponse])
 async def list_posts_feed(
-    post_type: str | None = Query(default=None, pattern="^(missing|found)$"),
-    status: str | None = Query(default=None, pattern="^(open|resolved)$"),
+    post_type: str | None = Query(
+        default=None,
+        pattern="^(missing|found)$",
+    ),
+    status: str | None = Query(
+        default=None,
+        pattern="^(open|resolved)$",
+    ),
     category_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
@@ -244,13 +377,7 @@ async def list_posts_feed(
     del user
 
     params = {
-        "select": (
-            f"{POST_FIELDS},"
-            "author:profiles!posts_user_id_fkey(id,full_name,avatar_url),"
-            "category:categories(id,name),"
-            "images:post_images(id,storage_path,alt_text,created_at),"
-            "comments(count)"
-        ),
+        "select": FEED_SELECT,
         "order": "created_at.desc",
         "limit": str(limit),
         "offset": str(offset),
@@ -276,89 +403,46 @@ async def list_posts_feed(
     if not posts:
         return []
 
-    results = []
-
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for post in posts:
-            feed_images = []
-
-            for image_record in post.pop("images", []):
-                storage_path = image_record["storage_path"]
-                encoded_path = "/".join(
-                    quote(segment, safe="")
-                    for segment in storage_path.split("/")
-                )
-
-                signing_url = (
-                    f"{settings.supabase_url.rstrip('/')}"
-                    f"/storage/v1/object/sign/item-images/{encoded_path}"
-                )
-
-                try:
-                    response = await client.post(
-                        signing_url,
-                        headers={
-                            "apikey": settings.supabase_publishable_key,
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json",
-                        },
-                        json={"expiresIn": 3600},
-                    )
-                except httpx.RequestError:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="The image storage service is temporarily unavailable.",
-                    )
-
-                if not response.is_success:
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Could not generate an image URL for the feed.",
-                    )
-
-                data = response.json()
-                signed_url = data.get("signedURL") or data.get("signedUrl")
-
-                if not signed_url:
-                    raise HTTPException(
-                        status_code=502,
-                        detail="The image storage service returned an invalid response.",
-                    )
-
-                if signed_url.startswith("/storage/v1/"):
-                    signed_url = (
-                        f"{settings.supabase_url.rstrip('/')}{signed_url}"
-                    )
-                elif signed_url.startswith("/"):
-                    signed_url = (
-                        f"{settings.supabase_url.rstrip('/')}"
-                        f"/storage/v1{signed_url}"
-                    )
-                elif not signed_url.startswith(("http://", "https://")):
-                    signed_url = (
-                        f"{settings.supabase_url.rstrip('/')}"
-                        f"/storage/v1/{signed_url}"
-                    )
-
-                feed_images.append({
-                    "id": image_record["id"],
-                    "alt_text": image_record.get("alt_text"),
-                    "created_at": image_record["created_at"],
-                    "signed_url": signed_url,
-                })
-
-            comment_rows = post.pop("comments", [])
-            comment_count = (
-                comment_rows[0].get("count", 0)
-                if comment_rows
-                else 0
-            )
-
-            results.append({
-                **post,
-                "images": feed_images,
-                "comment_count": comment_count,
-            })
+        results = [
+            await enrich_post(post, token, settings, client)
+            for post in posts
+        ]
 
     return results
+
+
+@router.get("/posts/{post_id}", response_model=FeedPostResponse)
+async def get_post_detail(
+    post_id: UUID,
+    token: str = Depends(require_token),
+    settings: Settings = Depends(get_settings),
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    del user  # get_current_user validates the Supabase access token.
+
+    result = await supabase_request(
+        settings,
+        token,
+        "GET",
+        "posts",
+        params={
+            "id": f"eq.{post_id}",
+            "select": FEED_SELECT,
+        },
+    )
+
+    if not isinstance(result, list) or not result:
+        raise HTTPException(
+            status_code=404,
+            detail="Post not found.",
+        )
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await enrich_post(
+            result[0],
+            token,
+            settings,
+            client,
+        )
 
