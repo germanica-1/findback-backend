@@ -297,3 +297,112 @@ async def get_post_images(
 
     return results
 
+
+@router.delete("/images/{image_id}", status_code=204)
+async def delete_post_image(
+    image_id: UUID,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    user: dict = Depends(get_current_user),
+):
+    settings = get_settings()
+    access_token = credentials.credentials
+
+    # Find the registered image.
+    images = await supabase_request(
+        settings,
+        access_token,
+        "GET",
+        "post_images",
+        params={
+            "select": "id,post_id,storage_path",
+            "id": f"eq.{image_id}",
+            "limit": "1",
+        },
+    )
+
+    if not images:
+        raise HTTPException(status_code=404, detail="Image not found.")
+
+    image_record = images[0]
+
+    # Verify ownership of the parent post.
+    posts = await supabase_request(
+        settings,
+        access_token,
+        "GET",
+        "posts",
+        params={
+            "select": "id,user_id",
+            "id": f"eq.{image_record['post_id']}",
+            "limit": "1",
+        },
+    )
+
+    if not posts:
+        raise HTTPException(status_code=404, detail="Parent post not found.")
+
+    if str(posts[0]["user_id"]) != str(user["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only delete images from your own posts.",
+        )
+
+    # Delete the Storage object while its metadata still exists.
+    encoded_path = "/".join(
+        quote(segment, safe="")
+        for segment in image_record["storage_path"].split("/")
+    )
+
+    storage_url = (
+        f"{settings.supabase_url.rstrip('/')}"
+        f"/storage/v1/object/item-images/{encoded_path}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.delete(
+                storage_url,
+                headers={
+                    "apikey": settings.supabase_publishable_key,
+                    "Authorization": f"Bearer {access_token}",
+                },
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=503,
+            detail="The image storage service is temporarily unavailable.",
+        )
+
+    if not response.is_success:
+        if response.status_code in (401, 403):
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="Supabase Storage rejected the deletion.",
+            )
+
+        raise HTTPException(
+            status_code=502,
+            detail="Could not delete the image from storage.",
+        )
+
+    # Remove metadata only after Storage deletion succeeds.
+    try:
+        await supabase_request(
+            settings,
+            access_token,
+            "DELETE",
+            "post_images",
+            params={"id": f"eq.{image_id}"},
+            extra_headers={"Prefer": "return=minimal"},
+        )
+    except HTTPException:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The image file was deleted, but its metadata could not "
+                "be removed. Check the post_images table."
+            ),
+        )
+
+    return None
+
