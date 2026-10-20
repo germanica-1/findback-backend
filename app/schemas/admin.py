@@ -1,5 +1,6 @@
+
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -14,4 +15,21 @@ class AdminLogResponse(BaseModel):
     post_id: UUID | None = None
     details: dict[str, Any] | None = None
     created_at: datetime
+
+class AdminRoleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["student", "admin"]
+
+
+class AdminUserResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: UUID
+    full_name: str
+    bio: str | None = None
+    avatar_url: str | None = None
+    role: Literal["student", "admin"]
+    created_at: datetime
+    updated_at: datetime
 

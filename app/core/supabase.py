@@ -43,6 +43,11 @@ async def supabase_request(
         )
 
     if not response.is_success:
+        print(
+            "supabase error: ",
+            response.status_code,
+            response.text,
+        )
         if response.status_code in (401, 403):
             raise HTTPException(
                 status_code=response.status_code,

@@ -1,3 +1,4 @@
+
 from typing import Any
 from uuid import UUID
 
@@ -12,7 +13,7 @@ async def record_admin_action(
     *,
     actor_id: UUID,
     action: str,
-    post_id: UUID,
+    post_id: UUID | None,
     details: dict[str, Any],
 ) -> None:
     """Insert an admin audit record using the backend-only service role."""
@@ -25,7 +26,7 @@ async def record_admin_action(
     payload = {
         "actor_id": str(actor_id),
         "action": action,
-        "post_id": str(post_id),
+        "post_id": str(post_id) if post_id is not None else None,
         "details": details,
     }
 
