@@ -11,7 +11,7 @@ from app.core.supabase import supabase_request
 from app.schemas.posts import PostResponse, PostStatusUpdate
 from app.services.audit import record_admin_action
 from app.schemas.admin import AdminLogResponse, AdminRoleUpdate, AdminUserResponse
-
+from app.services.admin_users import get_auth_emails_by_user_id
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin"])
 
@@ -127,6 +127,7 @@ async def update_post_status_as_admin(
 
 
 
+
 @router.get("/users", response_model=list[AdminUserResponse])
 async def list_users_for_admin(
     limit: int = Query(default=20, ge=1, le=50),
@@ -136,8 +137,10 @@ async def list_users_for_admin(
 ):
     del user
 
-    return await supabase_request(
-        get_settings(),
+    settings = get_settings()
+
+    profiles = await supabase_request(
+        settings,
         credentials.credentials,
         "GET",
         "profiles",
@@ -150,6 +153,19 @@ async def list_users_for_admin(
             "offset": str(offset),
         },
     )
+
+    emails = await get_auth_emails_by_user_id(
+        settings,
+        [str(profile["id"]) for profile in profiles],
+    )
+
+    return [
+        {
+            **profile,
+            "email": emails.get(str(profile["id"])),
+        }
+        for profile in profiles
+    ]
 
 
 

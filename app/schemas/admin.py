@@ -27,6 +27,7 @@ class AdminUserResponse(BaseModel):
 
     id: UUID
     full_name: str
+    email: str | None = None
     bio: str | None = None
     avatar_url: str | None = None
     role: Literal["student", "admin"]
